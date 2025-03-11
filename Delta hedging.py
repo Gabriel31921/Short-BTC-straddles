@@ -11,15 +11,15 @@ from datetime import timedelta, datetime
 from scipy.optimize import brentq
 from scipy.stats import norm
 
-start = "2025-03-07"
-start_time = "2025-03-07 23:00:00"
-expiration_time = "2025-03-08 08:00:00"
+start = "2025-03-06"
+start_time = "2025-03-06 23:00:00"
+expiration_time = "2025-03-07 08:00:00"
 start_ms = int(pd.Timestamp(start_time).timestamp() * 1000)
 end_ms = int(pd.Timestamp(expiration_time).timestamp() * 1000)
 
-strike = 86500          # Assume a fixed strike (e.g. ATM based on initial price)
+strike = 90500          # Assume a fixed strike (e.g. ATM based on initial price)
 r = 0.375               # Risk-free rate (for simplicity)
-sigma = 0.5072          # Fixed implied volatility (static IV)
+sigma = 0.7034          # Fixed implied volatility (static IV)
 expiration = pd.Timestamp(expiration_time, tz="UTC")  # Option expiration time
 
 # Define absolute delta threshold
@@ -66,6 +66,7 @@ for i, row in filtered_BTC.iterrows():
     S = row["Close"]
     
     # Compute time to expiration in years:
+    # This is only needed for testing really.
     T_remaining = (expiration - current_time).total_seconds() / (365 * 24 * 3600)
     if T_remaining <= 0:
         break  # Stop the simulation if expiration has passed

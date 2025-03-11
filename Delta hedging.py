@@ -29,9 +29,9 @@ strike = 79500          # Assume a fixed strike (e.g. ATM based on initial price
 r = 0.375               # Risk-free rate (for simplicity)
 sigma = 0.5670          # Fixed implied volatility (static IV)
 expiration = pd.Timestamp(expiration_time, tz="UTC")  # Option expiration time
-threshold = 0.15         # Delta threshold for hedging
+threshold = 0.10         # Delta threshold for hedging
 reduction_multiplier = 1.1  # Multiplier for when delta is decreasing
-increase_multiplier = 1.1
+increase_multiplier = 1
 
 # Define Black–Scholes delta functions (for call and put)
 def bs_call_delta(S, K, T, r, sigma):
@@ -62,14 +62,14 @@ for i, row in filtered_BTC.iterrows():
     current_time = pd.to_datetime(row["Datetime"])
     S = row["Close"]
     
-    # Store price and timestamp for plotting
-    prices.append(S)
-    timestamps.append(current_time)
-    
     # Compute time to expiration in years:
     T_remaining = (expiration - current_time).total_seconds() / (365 * 24 * 3600)
     if T_remaining <= 0:
         break  # Stop the simulation if expiration has passed
+    
+    # Store price and timestamp for plotting
+    prices.append(S)
+    timestamps.append(current_time)
     
     # Calculate option deltas (using static sigma) with updated T and S:
     call_delta = bs_call_delta(S, strike, T_remaining, r, sigma)
@@ -147,68 +147,94 @@ for i, row in filtered_BTC.iterrows():
 # Output the cumulative hedging PnL after the simulation:
 print("Cumulative Hedging PnL:", cumulative_hedge_pnl)
 
-# Create a figure with subplots
-plt.figure(figsize=(14, 18))
+# Make sure all lists have the same length for plotting
+min_length = min(len(prices), len(hedge_positions), len(theoretical_positions), 
+                 len(timestamps), len(net_deltas), len(pnl_history), len(hedge_trades))
+
+prices = prices[:min_length]
+hedge_positions = hedge_positions[:min_length]
+theoretical_positions = theoretical_positions[:min_length]
+timestamps = timestamps[:min_length]
+net_deltas = net_deltas[:min_length]
+pnl_history = pnl_history[:min_length]
+hedge_trades = hedge_trades[:min_length]
+
+# Set a consistent figure size and style for all plots
+plt.style.use('seaborn-v0_8-darkgrid')  # Clean style for better readability
+figsize = (12, 6)  # Consistent size for all plots
 
 # Plot 1: BTC Price over time
-plt.subplot(3, 1, 1)
-plt.plot(timestamps, prices)
-plt.title('BTC Price')
-plt.xlabel('Time')
-plt.ylabel('Price (USD)')
+plt.figure(figsize=figsize)
+plt.plot(timestamps, prices, linewidth=2)
+plt.title('BTC Price', fontsize=14)
+plt.xlabel('Time', fontsize=12)
+plt.ylabel('Price (USD)', fontsize=12)
 plt.grid(True)
+plt.tight_layout()
+plt.savefig('btc_price.png')
+plt.show()
 
 # Plot 2: Cumulative PnL over time
-plt.subplot(3, 1, 2)
-plt.plot(timestamps[:len(pnl_history)], pnl_history)
-plt.title('Cumulative Hedging PnL')
-plt.xlabel('Time')
-plt.ylabel('PnL (USD)')
+plt.figure(figsize=figsize)
+plt.plot(timestamps, pnl_history, linewidth=2, color='green')
+plt.title('Cumulative Hedging PnL', fontsize=14)
+plt.xlabel('Time', fontsize=12)
+plt.ylabel('PnL (USD)', fontsize=12)
 plt.grid(True)
+plt.tight_layout()
+plt.savefig('cumulative_pnl.png')
+plt.show()
 
 # Plot 3: Net Delta over time
-plt.subplot(3, 1, 3)
-plt.plot(timestamps[:len(net_deltas)], net_deltas)
+plt.figure(figsize=figsize)
+plt.plot(timestamps, net_deltas, linewidth=2, color='blue')
 plt.axhline(y=threshold, color='r', linestyle='--', label='Threshold')
 plt.axhline(y=-threshold, color='r', linestyle='--')
-plt.title('Net Delta over Time')
-plt.xlabel('Time')
-plt.ylabel('Net Delta')
-plt.legend()
+plt.title('Net Delta over Time', fontsize=14)
+plt.xlabel('Time', fontsize=12)
+plt.ylabel('Net Delta', fontsize=12)
+plt.legend(fontsize=10)
 plt.grid(True)
+plt.tight_layout()
+plt.savefig('net_delta.png')
 plt.show()
 
 # Plot 4: Hedge Position vs Theoretical
-plt.subplot(2, 1, 1)
-plt.plot(timestamps[:len(hedge_positions)], hedge_positions, label='Actual Hedge')
-plt.plot(timestamps[:len(theoretical_positions)], theoretical_positions, 'k--', alpha=0.6, 
+plt.figure(figsize=figsize)
+plt.plot(timestamps, hedge_positions, linewidth=2, label='Actual Hedge', color='purple')
+plt.plot(timestamps, theoretical_positions, 'k--', alpha=0.7, linewidth=1.5, 
          label='Theoretical (-net_delta)')
-plt.title('Actual Hedge vs Theoretical Position')
-plt.xlabel('Time')
-plt.ylabel('Position Size')
-plt.legend()
+plt.title('Actual Hedge vs Theoretical Position', fontsize=14)
+plt.xlabel('Time', fontsize=12)
+plt.ylabel('Position Size', fontsize=12)
+plt.legend(fontsize=10)
 plt.grid(True)
+plt.tight_layout()
+plt.savefig('hedge_vs_theoretical.png')
+plt.show()
 
 # Plot 5: Hedge Trades
-plt.subplot(2, 1, 2)
-plt.bar(timestamps[:len(hedge_trades)], hedge_trades, width=0.003, alpha=0.7)
-plt.title('Hedge Trades at Each Step')
-plt.xlabel('Time')
-plt.ylabel('Trade Size (+ buy, - sell)')
+plt.figure(figsize=figsize)
+plt.bar(timestamps, hedge_trades, width=0.003, alpha=0.8, color='teal')
+plt.title('Hedge Trades at Each Step', fontsize=14)
+plt.xlabel('Time', fontsize=12)
+plt.ylabel('Trade Size (+ buy, - sell)', fontsize=12)
 plt.grid(True)
-
 plt.tight_layout()
+plt.savefig('hedge_trades.png')
 plt.show()
 
 # Additional plot: Relationship between price and positions
-plt.figure(figsize=(12, 8))
-plt.scatter(prices, hedge_positions, label='Actual Hedge', alpha=0.7, c='blue')
-plt.scatter(prices, theoretical_positions, label='Theoretical (-net_delta)', alpha=0.3, c='red')
-plt.title('Hedge Position vs Price')
-plt.xlabel('Price (USD)')
-plt.ylabel('Position Size')
-plt.legend()
+plt.figure(figsize=figsize)
+plt.scatter(prices, hedge_positions, label='Actual Hedge', alpha=0.8, c='blue', s=50)
+plt.scatter(prices, theoretical_positions, label='Theoretical (-net_delta)', alpha=0.4, c='red', s=30)
+plt.title('Hedge Position vs Price', fontsize=14)
+plt.xlabel('Price (USD)', fontsize=12)
+plt.ylabel('Position Size', fontsize=12)
+plt.legend(fontsize=10)
 plt.grid(True)
+plt.tight_layout()
+plt.savefig('hedge_vs_price.png')
 plt.show()
 
 # Create a plot comparing PnL performance
@@ -217,16 +243,18 @@ standard_pnl = 0
 standard_hedge = 0
 standard_pnl_history = []
 
-for i in range(1, len(filtered_BTC)):
-    current_price = filtered_BTC.loc[i, 'Close']
-    prev_price = filtered_BTC.loc[i-1, 'Close']
+# Make sure we don't go beyond the data we already processed
+for i in range(1, min_length):
+    current_price = prices[i]
+    prev_price = prices[i-1]
+    current_time = timestamps[i]
     
-    # Calculate theoretical hedge at previous step
-    current_time = pd.to_datetime(filtered_BTC.loc[i, 'Datetime'])
+    # Calculate time to expiration
     T_remaining = (expiration - current_time).total_seconds() / (365 * 24 * 3600)
     if T_remaining <= 0:
         break
     
+    # Calculate deltas
     call_delta = bs_call_delta(prev_price, strike, T_remaining, r, sigma)
     put_delta = bs_put_delta(prev_price, strike, T_remaining, r, sigma)
     net_delta = -(call_delta + put_delta)
@@ -242,13 +270,40 @@ for i in range(1, len(filtered_BTC)):
     standard_pnl += std_pnl
     standard_pnl_history.append(standard_pnl)
 
+# Ensure lists are of the same length for plotting
+min_compare_length = min(len(pnl_history)-1, len(standard_pnl_history))
+compare_timestamps = timestamps[1:min_compare_length+1]
+
 # Add comparison plot
-plt.figure(figsize=(12, 6))
-plt.plot(timestamps[1:len(pnl_history)], pnl_history[1:], label='Incremental Strategy with Multiplier')
-plt.plot(timestamps[1:len(standard_pnl_history)+1], standard_pnl_history, label='Standard Delta Hedge')
-plt.title('PnL Comparison: Incremental vs Standard Strategy')
-plt.xlabel('Time')
-plt.ylabel('PnL (USD)')
-plt.legend()
+plt.figure(figsize=figsize)
+plt.plot(compare_timestamps, pnl_history[1:min_compare_length+1], linewidth=2, 
+         label='Incremental Strategy with Multiplier', color='green')
+plt.plot(compare_timestamps, standard_pnl_history[:min_compare_length], linewidth=2, 
+         label='Standard Delta Hedge', color='blue', alpha=0.8)
+plt.title('PnL Comparison: Incremental vs Standard Strategy', fontsize=14)
+plt.xlabel('Time', fontsize=12)
+plt.ylabel('PnL (USD)', fontsize=12)
+plt.legend(fontsize=10)
 plt.grid(True)
+plt.tight_layout()
+plt.savefig('pnl_comparison.png')
 plt.show()
+
+# Calculate some statistics for comparison
+incremental_final_pnl = pnl_history[-1] if pnl_history else 0
+standard_final_pnl = standard_pnl_history[-1] if standard_pnl_history else 0
+
+print(f"Incremental Strategy Final PnL: {incremental_final_pnl:.2f}")
+print(f"Standard Strategy Final PnL: {standard_final_pnl:.2f}")
+print(f"Difference: {incremental_final_pnl - standard_final_pnl:.2f}")
+
+# Calculate Sharpe-like ratios (using standard deviation of daily returns)
+if len(pnl_history) > 1:
+    inc_returns = np.diff(pnl_history)
+    inc_sharpe = inc_returns.mean() / inc_returns.std() if inc_returns.std() != 0 else 0
+    print(f"Incremental Strategy Sharpe-like Ratio: {inc_sharpe:.4f}")
+
+if len(standard_pnl_history) > 1:
+    std_returns = np.diff(standard_pnl_history)
+    std_sharpe = std_returns.mean() / std_returns.std() if std_returns.std() != 0 else 0
+    print(f"Standard Strategy Sharpe-like Ratio: {std_sharpe:.4f}")

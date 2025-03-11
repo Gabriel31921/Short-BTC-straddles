@@ -2,36 +2,36 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import scipy.stats as stats
-import matplotlib.pyplot as plt
-
 import datetime
 import math
-
+import matplotlib.pyplot as plt
 from datetime import timedelta, datetime
 from scipy.optimize import brentq
 from scipy.stats import norm
 
-start = "2025-03-06"
-start_time = "2025-03-06 23:00:00"
-expiration_time = "2025-03-07 08:00:00"
+# Setup parameters
+start = "2025-03-10"
+start_time = "2025-03-10 23:00:00"
+expiration_time = "2025-03-11 08:00:00"
 start_ms = int(pd.Timestamp(start_time).timestamp() * 1000)
 end_ms = int(pd.Timestamp(expiration_time).timestamp() * 1000)
 
-strike = 90500          # Assume a fixed strike (e.g. ATM based on initial price)
-r = 0.375               # Risk-free rate (for simplicity)
-sigma = 0.7034          # Fixed implied volatility (static IV)
-expiration = pd.Timestamp(expiration_time, tz="UTC")  # Option expiration time
-
-# Define absolute delta threshold
-delta_threshold = 0.10  # Only hedge when absolute net delta is above this value
-
+# Fetch BTC data
 BTC = yf.Ticker("BTC-USD").history(start=start, interval="1m")
 BTC.drop(columns=["Volume", "Dividends", "Stock Splits"], inplace=True)
 BTC.reset_index(inplace=True)
-
 BTC["Timestamp"] = [date.timestamp() * 1000 for date in BTC["Datetime"]]
 filtered_BTC = BTC[(BTC['Timestamp'] >= start_ms) & (BTC['Timestamp'] <= end_ms)]
 filtered_BTC = filtered_BTC.reset_index(drop=True).copy()
+
+# Option parameters
+strike = 79500          # Assume a fixed strike (e.g. ATM based on initial price)
+r = 0.375               # Risk-free rate (for simplicity)
+sigma = 0.5670          # Fixed implied volatility (static IV)
+expiration = pd.Timestamp(expiration_time, tz="UTC")  # Option expiration time
+threshold = 0.15         # Delta threshold for hedging
+reduction_multiplier = 1.1  # Multiplier for when delta is decreasing
+increase_multiplier = 1.1
 
 # Define Black–Scholes delta functions (for call and put)
 def bs_call_delta(S, K, T, r, sigma):
@@ -43,21 +43,18 @@ def bs_put_delta(S, K, T, r, sigma):
 
 # Initialize variables for the simulation:
 cumulative_hedge_pnl = 0.0   # Will accumulate the PNL from hedge trades
+hedge_shares = 0.0           # Current hedge position (starts at zero)
 prev_price = None            # Underlying price at the start of the interval
-actual_hedge_shares = 0      # The actual hedge position after applying threshold
-trade_count = 0              # Count of trades executed
-last_hedge_price = None      # Price at which last hedge was executed
+prev_net_delta = None        # Previous net delta to compare with current
+hedge_trades = []            # Track when and how much we're trading for the hedge
 
-# Tracking variables
-timestamps = []
+# Create lists to store data for plotting
 prices = []
+timestamps = []
 net_deltas = []
+pnl_history = []
 hedge_positions = []
-actual_hedge_positions = []
-trade_executed = []
-pnl_values = []
-delta_above_threshold = []   # Track if delta is above threshold
-hedging_status = []          # Track if we're in hedging mode
+theoretical_positions = []   # What position would be if we just set it to -net_delta
 
 # Loop over each time step in the filtered BTC data (each minute):
 for i, row in filtered_BTC.iterrows():
@@ -65,8 +62,11 @@ for i, row in filtered_BTC.iterrows():
     current_time = pd.to_datetime(row["Datetime"])
     S = row["Close"]
     
+    # Store price and timestamp for plotting
+    prices.append(S)
+    timestamps.append(current_time)
+    
     # Compute time to expiration in years:
-    # This is only needed for testing really.
     T_remaining = (expiration - current_time).total_seconds() / (365 * 24 * 3600)
     if T_remaining <= 0:
         break  # Stop the simulation if expiration has passed
@@ -76,163 +76,179 @@ for i, row in filtered_BTC.iterrows():
     put_delta = bs_put_delta(S, strike, T_remaining, r, sigma)
     
     # For a short straddle (short one call and one put), net delta is:
-    net_delta = - (call_delta + put_delta)
-    # The theoretical hedge position is the negative of the net delta:
-    hedge_shares = -net_delta
+    net_delta = -(call_delta + put_delta)
+    net_deltas.append(net_delta)
     
-    # Check if absolute net delta is above threshold
-    is_above_threshold = abs(net_delta) > delta_threshold
+    # Calculate theoretical position (what it would be if we just set to -net_delta)
+    theoretical_position = -net_delta
+    theoretical_positions.append(theoretical_position)
     
-    # For the very first time step, initialize values:
+    # Handle first iteration
     if prev_price is None:
         prev_price = S
-        actual_hedge_shares = 0  # Start with no hedge
-        trade_this_step = False
-        in_hedging_mode = False
+        prev_net_delta = net_delta
+        # Initialize hedge based on threshold - only hedge if above threshold
+        if abs(net_delta) > threshold:
+            hedge_shares = -net_delta  # Initial hedge matches delta exactly
+            hedge_trades.append(hedge_shares)
+        else:
+            hedge_shares = 0  # No initial hedge if below threshold
+            hedge_trades.append(0)
         
-        # Save tracking data
-        timestamps.append(current_time)
-        prices.append(S)
-        net_deltas.append(net_delta)
         hedge_positions.append(hedge_shares)
-        actual_hedge_positions.append(actual_hedge_shares)
-        trade_executed.append(trade_this_step)
-        pnl_values.append(0)
-        delta_above_threshold.append(is_above_threshold)
-        hedging_status.append(in_hedging_mode)
+        pnl_history.append(0)
         continue
     
-    # Determine hedging mode and actions
-    if not in_hedging_mode and is_above_threshold:
-        # Start hedging mode
-        in_hedging_mode = True
-        actual_hedge_shares = hedge_shares
-        trade_this_step = True
-        trade_count += 1
-        last_hedge_price = S
-    elif in_hedging_mode and not is_above_threshold:
-        # Exit hedging mode
-        in_hedging_mode = False
-        actual_hedge_shares = 0  # Unwind hedge
-        trade_this_step = True
-        trade_count += 1
-        last_hedge_price = S
-    elif in_hedging_mode:
-        # Continue hedging mode with minute-by-minute rebalancing
-        actual_hedge_shares = hedge_shares
-        trade_this_step = True
-        trade_count += 1
-        last_hedge_price = S
-    else:
-        # Not in hedging mode and delta still below threshold
-        actual_hedge_shares = 0
-        trade_this_step = False
+    # Calculate PnL from previous hedge before any adjustment
+    pnl_trade = hedge_shares * (S - prev_price)
+    cumulative_hedge_pnl += pnl_trade
     
-    # Calculate PNL for the interval (only if we had a position)
-    if actual_hedge_shares != 0 or prev_price == last_hedge_price:
-        pnl_trade = actual_hedge_shares * (S - prev_price)
-        cumulative_hedge_pnl += pnl_trade
-    else:
-        pnl_trade = 0
+    # Determine hedge adjustment based on delta change
+    current_abs_delta = abs(net_delta)
+    prev_abs_delta = abs(prev_net_delta)
     
-    # Save tracking data
-    timestamps.append(current_time)
-    prices.append(S)
-    net_deltas.append(net_delta)
+    # Track hedge trade for this step (default to zero)
+    hedge_trade = 0
+    
+    # Check if we need to completely close the hedge
+    if current_abs_delta < threshold:
+        # Close entire position if below threshold
+        hedge_trade = -hedge_shares  # Trade to close is opposite of current position
+        hedge_shares = 0  # Position is now zero
+    else:
+        # Calculate delta change
+        delta_change = -net_delta - (-prev_net_delta)  # Change in theoretical hedge position
+        
+        if abs(net_delta) > abs(prev_net_delta):
+            # Delta is increasing - add the exact delta change
+            hedge_trade = delta_change * increase_multiplier
+            hedge_shares += delta_change * increase_multiplier
+        else:
+            # Delta is decreasing - remove more than the delta change
+            hedge_trade = delta_change * reduction_multiplier
+            hedge_shares += delta_change * reduction_multiplier
+            # Make sure we don't over-hedge in the opposite direction
+            if np.sign(hedge_shares) != np.sign(-net_delta) and abs(hedge_shares) > 0.01:
+                hedge_shares = 0  # Reset to zero if we cross over
+
+    # Record the hedge trade
+    hedge_trades.append(hedge_trade)
+    
+    # Store hedge position for plotting
     hedge_positions.append(hedge_shares)
-    actual_hedge_positions.append(actual_hedge_shares)
-    trade_executed.append(trade_this_step)
-    pnl_values.append(pnl_trade)
-    delta_above_threshold.append(is_above_threshold)
-    hedging_status.append(in_hedging_mode)
     
-    # Update for next interval
+    # Record PnL
+    pnl_history.append(cumulative_hedge_pnl)
+    
+    # Update values for next iteration
     prev_price = S
+    prev_net_delta = net_delta
 
-# Create tracking dataframe
-tracking_df = pd.DataFrame({
-    'Timestamp': timestamps,
-    'Price': prices,
-    'Net_Delta': net_deltas,
-    'Theoretical_Hedge': hedge_positions,
-    'Actual_Hedge': actual_hedge_positions,
-    'Trade_Executed': trade_executed,
-    'Delta_Above_Threshold': delta_above_threshold,
-    'In_Hedging_Mode': hedging_status,
-    'Interval_PnL': pnl_values
-})
+# Output the cumulative hedging PnL after the simulation:
+print("Cumulative Hedging PnL:", cumulative_hedge_pnl)
 
-# Calculate cumulative PnL
-tracking_df['Cumulative_PnL'] = tracking_df['Interval_PnL'].cumsum()
+# Create a figure with subplots
+plt.figure(figsize=(14, 18))
 
-# Output the results:
-print(f"Delta threshold: {delta_threshold}")
-print(f"Cumulative Hedging PnL: {cumulative_hedge_pnl:.2f}")
-print(f"Total number of trades: {trade_count}")
-print(f"Original trades (without threshold): {len(tracking_df)}")
-print(f"Trade reduction: {((len(tracking_df) - trade_count) / len(tracking_df) * 100):.2f}%")
-print(f"Time spent in hedging mode: {tracking_df['In_Hedging_Mode'].sum()} / {len(tracking_df)} minutes")
-print(f"Percentage of time hedging: {(tracking_df['In_Hedging_Mode'].sum() / len(tracking_df) * 100):.2f}%")
+# Plot 1: BTC Price over time
+plt.subplot(3, 1, 1)
+plt.plot(timestamps, prices)
+plt.title('BTC Price')
+plt.xlabel('Time')
+plt.ylabel('Price (USD)')
+plt.grid(True)
 
-# Plot visualization
-plt.figure(figsize=(12, 8))
-fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 15), sharex=True)
+# Plot 2: Cumulative PnL over time
+plt.subplot(3, 1, 2)
+plt.plot(timestamps[:len(pnl_history)], pnl_history)
+plt.title('Cumulative Hedging PnL')
+plt.xlabel('Time')
+plt.ylabel('PnL (USD)')
+plt.grid(True)
 
-# Plot 1: Price over time
-ax1.plot(tracking_df['Timestamp'], tracking_df['Price'], 'b-')
-ax1.set_title('BTC Price')
-ax1.set_ylabel('Price (USD)')
-ax1.grid(True)
+# Plot 3: Net Delta over time
+plt.subplot(3, 1, 3)
+plt.plot(timestamps[:len(net_deltas)], net_deltas)
+plt.axhline(y=threshold, color='r', linestyle='--', label='Threshold')
+plt.axhline(y=-threshold, color='r', linestyle='--')
+plt.title('Net Delta over Time')
+plt.xlabel('Time')
+plt.ylabel('Net Delta')
+plt.legend()
+plt.grid(True)
+plt.show()
 
-# Plot 2: Net Delta and Hedge Positions
-ax2.plot(tracking_df['Timestamp'], tracking_df['Net_Delta'], 'g-', label='Net Delta')
-ax2.plot(tracking_df['Timestamp'], tracking_df['Theoretical_Hedge'], 'r--', label='Theoretical Hedge')
-ax2.plot(tracking_df['Timestamp'], tracking_df['Actual_Hedge'], 'b-', label='Actual Hedge')
+# Plot 4: Hedge Position vs Theoretical
+plt.subplot(2, 1, 1)
+plt.plot(timestamps[:len(hedge_positions)], hedge_positions, label='Actual Hedge')
+plt.plot(timestamps[:len(theoretical_positions)], theoretical_positions, 'k--', alpha=0.6, 
+         label='Theoretical (-net_delta)')
+plt.title('Actual Hedge vs Theoretical Position')
+plt.xlabel('Time')
+plt.ylabel('Position Size')
+plt.legend()
+plt.grid(True)
 
-# Add threshold lines
-ax2.axhline(y=delta_threshold, color='orange', linestyle='--', alpha=0.7, label=f'Upper Threshold (+{delta_threshold})')
-ax2.axhline(y=-delta_threshold, color='orange', linestyle='--', alpha=0.7, label=f'Lower Threshold (-{delta_threshold})')
-
-ax2.set_title('Delta and Hedge Positions')
-ax2.set_ylabel('Delta/Position')
-ax2.grid(True)
-ax2.legend()
-
-# Plot 3: PnL
-ax3.plot(tracking_df['Timestamp'], tracking_df['Cumulative_PnL'], 'purple')
-ax3.set_title('Cumulative PnL')
-ax3.set_xlabel('Time')
-ax3.set_ylabel('PnL (USD)')
-ax3.grid(True)
-
-# Add shading for hedging periods
-for i in range(len(tracking_df)-1):
-    if tracking_df['In_Hedging_Mode'].iloc[i]:
-        ax1.axvspan(tracking_df['Timestamp'].iloc[i], tracking_df['Timestamp'].iloc[i+1], 
-                   alpha=0.2, color='green')
-        ax2.axvspan(tracking_df['Timestamp'].iloc[i], tracking_df['Timestamp'].iloc[i+1], 
-                   alpha=0.2, color='green')
-        ax3.axvspan(tracking_df['Timestamp'].iloc[i], tracking_df['Timestamp'].iloc[i+1], 
-                   alpha=0.2, color='green')
-
-# Add markers for executed trades
-for i, executed in enumerate(tracking_df['Trade_Executed']):
-    if executed:
-        ax2.plot(tracking_df['Timestamp'].iloc[i], tracking_df['Actual_Hedge'].iloc[i], 'ro', markersize=4)
+# Plot 5: Hedge Trades
+plt.subplot(2, 1, 2)
+plt.bar(timestamps[:len(hedge_trades)], hedge_trades, width=0.003, alpha=0.7)
+plt.title('Hedge Trades at Each Step')
+plt.xlabel('Time')
+plt.ylabel('Trade Size (+ buy, - sell)')
+plt.grid(True)
 
 plt.tight_layout()
 plt.show()
 
-# Create a scatter plot to visualize the relationship between price and net delta
-plt.figure(figsize=(10, 6))
-scatter = plt.scatter(tracking_df['Price'], tracking_df['Net_Delta'], 
-                     c=tracking_df['In_Hedging_Mode'], cmap='coolwarm', 
-                     alpha=0.7, edgecolors='k', linewidth=0.5)
-plt.axhline(y=delta_threshold, color='orange', linestyle='--', alpha=0.7, label=f'Upper Threshold (+{delta_threshold})')
-plt.axhline(y=-delta_threshold, color='orange', linestyle='--', alpha=0.7, label=f'Lower Threshold (-{delta_threshold})')
-plt.legend(handles=[*scatter.legend_elements()[0]], labels=['No Hedging', 'Hedging'])
-plt.title('Relationship between Price and Net Delta')
-plt.xlabel('BTC Price (USD)')
-plt.ylabel('Net Delta')
+# Additional plot: Relationship between price and positions
+plt.figure(figsize=(12, 8))
+plt.scatter(prices, hedge_positions, label='Actual Hedge', alpha=0.7, c='blue')
+plt.scatter(prices, theoretical_positions, label='Theoretical (-net_delta)', alpha=0.3, c='red')
+plt.title('Hedge Position vs Price')
+plt.xlabel('Price (USD)')
+plt.ylabel('Position Size')
+plt.legend()
+plt.grid(True)
+plt.show()
+
+# Create a plot comparing PnL performance
+# Calculate what the PnL would be with a standard hedge strategy
+standard_pnl = 0
+standard_hedge = 0
+standard_pnl_history = []
+
+for i in range(1, len(filtered_BTC)):
+    current_price = filtered_BTC.loc[i, 'Close']
+    prev_price = filtered_BTC.loc[i-1, 'Close']
+    
+    # Calculate theoretical hedge at previous step
+    current_time = pd.to_datetime(filtered_BTC.loc[i, 'Datetime'])
+    T_remaining = (expiration - current_time).total_seconds() / (365 * 24 * 3600)
+    if T_remaining <= 0:
+        break
+    
+    call_delta = bs_call_delta(prev_price, strike, T_remaining, r, sigma)
+    put_delta = bs_put_delta(prev_price, strike, T_remaining, r, sigma)
+    net_delta = -(call_delta + put_delta)
+    
+    # Apply standard delta hedge (always -net_delta if above threshold)
+    if abs(net_delta) > threshold:
+        standard_hedge = -net_delta
+    else:
+        standard_hedge = 0
+    
+    # Calculate PnL
+    std_pnl = standard_hedge * (current_price - prev_price)
+    standard_pnl += std_pnl
+    standard_pnl_history.append(standard_pnl)
+
+# Add comparison plot
+plt.figure(figsize=(12, 6))
+plt.plot(timestamps[1:len(pnl_history)], pnl_history[1:], label='Incremental Strategy with Multiplier')
+plt.plot(timestamps[1:len(standard_pnl_history)+1], standard_pnl_history, label='Standard Delta Hedge')
+plt.title('PnL Comparison: Incremental vs Standard Strategy')
+plt.xlabel('Time')
+plt.ylabel('PnL (USD)')
+plt.legend()
 plt.grid(True)
 plt.show()

@@ -10,11 +10,12 @@ from scipy.optimize import brentq
 from scipy.stats import norm
 
 # Setup parameters
-start = "2025-03-10"
-start_time = "2025-03-10 23:00:00"
-expiration_time = "2025-03-11 08:00:00"
+start = "2025-03-09"
+start_time = "2025-03-09 23:00:00"
+expiration_time = "2025-03-10 08:00:00"
 start_ms = int(pd.Timestamp(start_time).timestamp() * 1000)
 end_ms = int(pd.Timestamp(expiration_time).timestamp() * 1000)
+premium = 1726.02
 
 # Fetch BTC data
 BTC = yf.Ticker("BTC-USD").history(start=start, interval="1m")
@@ -25,12 +26,12 @@ filtered_BTC = BTC[(BTC['Timestamp'] >= start_ms) & (BTC['Timestamp'] <= end_ms)
 filtered_BTC = filtered_BTC.reset_index(drop=True).copy()
 
 # Option parameters
-strike = 79500          # Assume a fixed strike (e.g. ATM based on initial price)
+strike = 80500          # Assume a fixed strike (e.g. ATM based on initial price)
 r = 0.375               # Risk-free rate (for simplicity)
-sigma = 0.5670          # Fixed implied volatility (static IV)
+sigma = 0.8379          # Fixed implied volatility (static IV)
 expiration = pd.Timestamp(expiration_time, tz="UTC")  # Option expiration time
 threshold = 0.10         # Delta threshold for hedging
-reduction_multiplier = 1.1  # Multiplier for when delta is decreasing
+reduction_multiplier = 1  # Multiplier for when delta is decreasing
 increase_multiplier = 1
 
 # Define Black–Scholes delta functions (for call and put)
@@ -87,7 +88,7 @@ for i, row in filtered_BTC.iterrows():
     if prev_price is None:
         prev_price = S
         prev_net_delta = net_delta
-        # Initialize hedge based on threshold - only hedge if above threshold
+        # Initialize hedge based on threshold - only hedge if above threshold       
         if abs(net_delta) > threshold:
             hedge_shares = -net_delta  # Initial hedge matches delta exactly
             hedge_trades.append(hedge_shares)
@@ -115,6 +116,9 @@ for i, row in filtered_BTC.iterrows():
         # Close entire position if below threshold
         hedge_trade = -hedge_shares  # Trade to close is opposite of current position
         hedge_shares = 0  # Position is now zero
+    elif abs(S - strike) < premium:
+        hedge_trade = -hedge_shares
+        hedge_shares = 0
     else:
         # Calculate delta change
         delta_change = -net_delta - (-prev_net_delta)  # Change in theoretical hedge position
@@ -171,7 +175,6 @@ plt.xlabel('Time', fontsize=12)
 plt.ylabel('Price (USD)', fontsize=12)
 plt.grid(True)
 plt.tight_layout()
-plt.savefig('btc_price.png')
 plt.show()
 
 # Plot 2: Cumulative PnL over time
@@ -182,7 +185,6 @@ plt.xlabel('Time', fontsize=12)
 plt.ylabel('PnL (USD)', fontsize=12)
 plt.grid(True)
 plt.tight_layout()
-plt.savefig('cumulative_pnl.png')
 plt.show()
 
 # Plot 3: Net Delta over time
@@ -196,21 +198,6 @@ plt.ylabel('Net Delta', fontsize=12)
 plt.legend(fontsize=10)
 plt.grid(True)
 plt.tight_layout()
-plt.savefig('net_delta.png')
-plt.show()
-
-# Plot 4: Hedge Position vs Theoretical
-plt.figure(figsize=figsize)
-plt.plot(timestamps, hedge_positions, linewidth=2, label='Actual Hedge', color='purple')
-plt.plot(timestamps, theoretical_positions, 'k--', alpha=0.7, linewidth=1.5, 
-         label='Theoretical (-net_delta)')
-plt.title('Actual Hedge vs Theoretical Position', fontsize=14)
-plt.xlabel('Time', fontsize=12)
-plt.ylabel('Position Size', fontsize=12)
-plt.legend(fontsize=10)
-plt.grid(True)
-plt.tight_layout()
-plt.savefig('hedge_vs_theoretical.png')
 plt.show()
 
 # Plot 5: Hedge Trades
@@ -221,21 +208,20 @@ plt.xlabel('Time', fontsize=12)
 plt.ylabel('Trade Size (+ buy, - sell)', fontsize=12)
 plt.grid(True)
 plt.tight_layout()
-plt.savefig('hedge_trades.png')
 plt.show()
 
-# Additional plot: Relationship between price and positions
+# Plot 4: Hedge Position vs Theoretical
 plt.figure(figsize=figsize)
-plt.scatter(prices, hedge_positions, label='Actual Hedge', alpha=0.8, c='blue', s=50)
-plt.scatter(prices, theoretical_positions, label='Theoretical (-net_delta)', alpha=0.4, c='red', s=30)
-plt.title('Hedge Position vs Price', fontsize=14)
-plt.xlabel('Price (USD)', fontsize=12)
+plt.subplot(2, 1, 1)
+plt.plot(timestamps, hedge_positions, linewidth=2, label='Actual Hedge', color='purple')
+plt.plot(timestamps, theoretical_positions, 'k--', alpha=0.7, linewidth=1.5, 
+         label='Theoretical (-net_delta)')
+plt.title('Actual Hedge vs Theoretical Position', fontsize=14)
+plt.xlabel('Time', fontsize=12)
 plt.ylabel('Position Size', fontsize=12)
 plt.legend(fontsize=10)
 plt.grid(True)
 plt.tight_layout()
-plt.savefig('hedge_vs_price.png')
-plt.show()
 
 # Create a plot comparing PnL performance
 # Calculate what the PnL would be with a standard hedge strategy
@@ -275,7 +261,7 @@ min_compare_length = min(len(pnl_history)-1, len(standard_pnl_history))
 compare_timestamps = timestamps[1:min_compare_length+1]
 
 # Add comparison plot
-plt.figure(figsize=figsize)
+plt.subplot(2, 1, 2)
 plt.plot(compare_timestamps, pnl_history[1:min_compare_length+1], linewidth=2, 
          label='Incremental Strategy with Multiplier', color='green')
 plt.plot(compare_timestamps, standard_pnl_history[:min_compare_length], linewidth=2, 
@@ -286,7 +272,6 @@ plt.ylabel('PnL (USD)', fontsize=12)
 plt.legend(fontsize=10)
 plt.grid(True)
 plt.tight_layout()
-plt.savefig('pnl_comparison.png')
 plt.show()
 
 # Calculate some statistics for comparison

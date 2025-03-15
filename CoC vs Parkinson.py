@@ -7,14 +7,14 @@ import datetime
 from datetime import datetime
 
 # Define time range
-start = "2025-03-10"
-start_time = "2025-03-10 23:00:00"
-expiration_time = "2025-03-11 08:00:00"
+start = "2025-03-14"
+start_time = "2025-03-14 23:00:00"
+expiration_time = "2025-03-15 08:00:00"
 start_ms = int(pd.Timestamp(start_time).timestamp() * 1000)
 end_ms = int(pd.Timestamp(expiration_time).timestamp() * 1000)
 
 # Get BTC data
-BTC = yf.Ticker("BTC-USD").history(start=start, auto_adjust=False, interval="1m")
+BTC = yf.Ticker("BTC-USD").history(start=start, auto_adjust=False, interval="5m")
 BTC.drop(columns=["Volume", "Dividends", "Stock Splits"], inplace=True)
 BTC.reset_index(inplace=True)
 
